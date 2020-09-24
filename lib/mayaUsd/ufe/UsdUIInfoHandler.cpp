@@ -16,10 +16,16 @@
 #include "UsdUIInfoHandler.h"
 #include "UsdSceneItem.h"
 
+#if UFE_PREVIEW_VERSION_NUM >= 2023
+#include <pxr/usd/usd/primCompositionQuery.h>
+#include <pxr/usd/pcp/types.h>
+#endif
+
 #include <maya/MDoubleArray.h>
 #include <maya/MGlobal.h>
 
 #include <map>
+#include <set>
 
 MAYAUSD_NS_DEF {
 namespace ufe {
@@ -73,11 +79,19 @@ bool UsdUIInfoHandler::treeViewCellInfo(const Ufe::SceneItem::Ptr& item, Ufe::Ce
 	return changed;
 }
 
+#if UFE_PREVIEW_VERSION_NUM >= 2023
+Ufe::UIInfoHandler::Icon UsdUIInfoHandler::treeViewIcon(const Ufe::SceneItem::Ptr& item) const
+#else
 std::string UsdUIInfoHandler::treeViewIcon(const Ufe::SceneItem::Ptr& item) const
+#endif
 {
 	// Special case for nullptr input.
 	if (!item) {
+#if UFE_PREVIEW_VERSION_NUM >= 2023
+		return Ufe::UIInfoHandler::Icon("out_USD_UsdTyped.png");	// Default USD icon
+#else
 		return "out_USD_UsdTyped.png";	// Default USD icon
+#endif
 	}
 
 	// We support these node types directly.
@@ -106,14 +120,126 @@ std::string UsdUIInfoHandler::treeViewIcon(const Ufe::SceneItem::Ptr& item) cons
 		{"Volume",				"out_USD_Volume.png"}
 	};
 
+#if UFE_PREVIEW_VERSION_NUM >= 2023
+	Ufe::UIInfoHandler::Icon icon;		// Default is empty (no icon and no badge).
+#endif
+
 	const auto search = supportedTypes.find(item->nodeType());
 	if (search != supportedTypes.cend()) {
+#if UFE_PREVIEW_VERSION_NUM >= 2023
+		icon.baseIcon = search->second;
+#else
 		return search->second;
+#endif
 	}
 
+#if UFE_PREVIEW_VERSION_NUM >= 2023
+	// Check if we have any composition arcs - if yes we display a special badge.
+	UsdSceneItem::Ptr usdItem = std::dynamic_pointer_cast<UsdSceneItem>(item);
+	if (usdItem)
+	{
+		PXR_NS::UsdPrimCompositionQuery query(usdItem->prim());
+		for (const auto& arc : query.GetCompositionArcs())
+		{
+			bool keepLooking = true;
+			switch (arc.GetArcType())
+			{
+			case PXR_NS::PcpArcTypeReference:
+			case PXR_NS::PcpArcTypePayload:
+			case PXR_NS::PcpArcTypeInherit:
+			case PXR_NS::PcpArcTypeSpecialize:
+				// For these types we set a special comp arc badge. But we
+				// keep looking for a variant.
+				icon.badgeIcon = "out_USD_CompArcBadge.png";
+				icon.pos = Ufe::UIInfoHandler::LowerRight;
+				break;
+
+			case PXR_NS::PcpArcTypeVariant :
+				// Once we've found a variant type, use that badge and then
+				// we are finished.
+				icon.badgeIcon = "out_USD_CompArcBadgeV.png";
+				icon.pos = Ufe::UIInfoHandler::LowerRight;
+				keepLooking = false;
+				break;
+			default:
+				break;
+			}
+			if (!keepLooking) break;
+		}
+	}
+
+	return icon;
+#else
 	// No specific node type icon was found.
 	return "";
+#endif
 }
+
+#if UFE_PREVIEW_VERSION_NUM >= 2023
+std::string UsdUIInfoHandler::treeViewTooltip(const Ufe::SceneItem::Ptr& item) const
+{
+	std::string tooltip;
+
+	UsdSceneItem::Ptr usdItem = std::dynamic_pointer_cast<UsdSceneItem>(item);
+	if (usdItem)
+	{
+		// Loop thru all the composition arcs for the prim of the input scene item
+		// and store the number of each arc type.
+		std::multiset<PXR_NS::PcpArcType> arcTypeCount;
+		PXR_NS::UsdPrimCompositionQuery query(usdItem->prim());
+		for (const auto& arc : query.GetCompositionArcs())
+		{
+			auto arcType = arc.GetArcType();
+			switch (arcType)
+			{
+				// We recognize these arc types.
+			case PXR_NS::PcpArcTypeReference:
+			case PXR_NS::PcpArcTypePayload:
+			case PXR_NS::PcpArcTypeInherit:
+			case PXR_NS::PcpArcTypeSpecialize:
+			case PXR_NS::PcpArcTypeVariant :
+				arcTypeCount.emplace(arcType);
+				break;
+			default:
+				break;
+			}
+		}
+
+		// Map of arc type with singular and plural string to display.
+		static const std::map<PXR_NS::PcpArcType, std::pair<std::string, std::string>> arcTypeStrings{
+			{ PXR_NS::PcpArcTypeReference, { "Reference", "References" } },
+			{ PXR_NS::PcpArcTypePayload, { "Payload", "Payloads" } },
+			{ PXR_NS::PcpArcTypeInherit, { "Inherit", "Inherits" } },
+			{ PXR_NS::PcpArcTypeSpecialize, { "Specialize", "Specializes" } },
+			{ PXR_NS::PcpArcTypeVariant, { "Variant", "Variants" } }
+		};
+		if (!arcTypeCount.empty())
+		{
+			tooltip += "<b>Composition Arcs:</b> ";
+			bool needComma = false;
+			for ( const auto& arcType : arcTypeStrings )
+			{
+				auto nb = arcTypeCount.count(arcType.first);
+				if (nb >= 1)
+				{
+					if (needComma)
+						tooltip += ", ";
+					if (nb == 1) {
+						tooltip += arcType.second.first;
+					}
+					else {
+						tooltip += std::to_string(nb);
+						tooltip += " ";
+						tooltip += arcType.second.second;
+					}
+					needComma = true;
+				}
+			}
+		}
+	}
+	return tooltip;
+}
+#endif
 
 std::string UsdUIInfoHandler::getLongRunTimeLabel() const
 {
